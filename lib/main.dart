@@ -3,10 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:razorpay_flutter/razorpay_flutter.dart';
 
-void main() => runApp(const MyApp());
+void main() {
+  runApp(const MyApp());
+}
 
-// CHANGE THIS ONLY
-const String BACKEND_URL = "http://13.203.219.206:8000/";
+// 🔴 CHANGE ONLY THIS
+const String BACKEND_URL = "https://api.chandus7.in";
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
@@ -15,32 +17,32 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return const MaterialApp(
       debugShowCheckedModeBanner: false,
-      home: PaymentScreen(),
+      home: PaymentPage(),
     );
   }
 }
 
-class PaymentScreen extends StatefulWidget {
-  const PaymentScreen({super.key});
+class PaymentPage extends StatefulWidget {
+  const PaymentPage({super.key});
 
   @override
-  State<PaymentScreen> createState() => _PaymentScreenState();
+  State<PaymentPage> createState() => _PaymentPageState();
 }
 
-class _PaymentScreenState extends State<PaymentScreen> {
+class _PaymentPageState extends State<PaymentPage> {
   late Razorpay _razorpay;
 
-  String? orderId;
-  String statusText = "Ready to pay";
-  bool isLoading = false;
+  String? _orderId;
+  bool _loading = false;
+  String _status = "Ready";
 
   @override
   void initState() {
     super.initState();
     _razorpay = Razorpay();
 
-    _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _handleSuccess);
-    _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _handleError);
+    _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _onSuccess);
+    _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _onError);
   }
 
   @override
@@ -49,116 +51,127 @@ class _PaymentScreenState extends State<PaymentScreen> {
     super.dispose();
   }
 
-  // STEP 1: CALL YOUR EXISTING BACKEND
+  // =====================================================
+  // STEP 1: CREATE ORDER
+  // =====================================================
   Future<void> startPayment() async {
     setState(() {
-      isLoading = true;
-      statusText = "Creating order...";
+      _loading = true;
+      _status = "Creating order…";
     });
 
     try {
-      final response = await http.post(
+      final res = await http.post(
         Uri.parse("$BACKEND_URL/create-order/"),
         headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "amount": 100, // ₹1 = 100 paise (REAL TIME)
-        }),
+        body: jsonEncode({"amount": 500}), // ₹5 (recommended)
       );
 
-      if (response.statusCode != 200) {
+      if (res.statusCode != 200) {
         throw "Order creation failed";
       }
 
-      final data = jsonDecode(response.body);
-      orderId = data['order_id'];
+      final data = jsonDecode(res.body);
+      _orderId = data["order_id"];
 
-      openRazorpay(data['key']);
-
+      _openRazorpay(data["key"]);
     } catch (e) {
       setState(() {
-        isLoading = false;
-        statusText = "Error: $e";
+        _loading = false;
+        _status = "Failed to start payment";
       });
     }
   }
 
-  // STEP 2: OPEN RAZORPAY CHECKOUT
-  void openRazorpay(String key) {
-    var options = {
-      'key': key,
-      'order_id': orderId,
-      'amount': 500,
-      'currency': 'INR',
-      'name': 'Secure Payment',
-      'description': '₹1 Test Payment',
-      'prefill': {
-        'contact': '+91 9949597079',
-        'email': 'chandrasekharsuragani532@gmail.com',
-      },
-      'theme': {'color': '#0A6EBD'}
-    };
+  // =====================================================
+  // STEP 2: OPEN RAZORPAY
+  // =====================================================
+  void _openRazorpay(String key) {
+    _status = "Opening payment gateway…";
 
-    _razorpay.open(options);
+    _razorpay.open({
+      'key': key,
+      'order_id': _orderId,
+      'amount': 200,
+      'currency': 'INR',
+      'name': 'Chandus7 Payment',
+      'description': 'UPI / Card Payment',
+      'timeout': 180,
+      'retry': {'enabled': false},
+      'prefill': {
+        'contact': '9949597079',
+        'email': 'kingchandus143@gmail.com'
+      }
+    });
   }
 
-  // STEP 3: SDK SUCCESS (NOT FINAL)
-  Future<void> _handleSuccess(PaymentSuccessResponse response) async {
+  // =====================================================
+  // STEP 3: SDK SUCCESS CALLBACK (NOT FINAL TRUTH)
+  // =====================================================
+  Future<void> _onSuccess(PaymentSuccessResponse response) async {
     setState(() {
-      statusText = "Verifying payment...";
+      _status = "Verifying payment…";
     });
 
-    final verify = await http.post(
+    // ⚠️ ONLY NOW we talk to backend
+    final res = await http.post(
       Uri.parse("$BACKEND_URL/verify-payment/"),
       headers: {"Content-Type": "application/json"},
       body: jsonEncode({
-        "order_id": orderId,
+        "order_id": _orderId,
         "payment_id": response.paymentId,
         "signature": response.signature,
       }),
     );
 
-    if (verify.statusCode == 200) {
+    if (res.statusCode == 200) {
       setState(() {
-        statusText = "✅ ₹1 Payment Successful";
-        isLoading = false;
+        _status = "✅ Payment Successful";
+        _loading = false;
       });
     } else {
+      // Signature failed or backend rejected
       setState(() {
-        statusText = "⚠️ Payment pending (money safe)";
-        isLoading = false;
+        _status = "⚠️ Payment processing. Please refresh.";
+        _loading = false;
       });
     }
   }
 
-  // PAYMENT FAILED OR CANCELLED
-  void _handleError(PaymentFailureResponse response) {
+  // =====================================================
+  // STEP 4: SDK ERROR / BANKING BUG / UPI ISSUE
+  // =====================================================
+  void _onError(PaymentFailureResponse response) {
+    // ❌ DO NOT mark failed immediately
     setState(() {
-      statusText = "❌ Payment cancelled / failed";
-      isLoading = false;
+      _status = "⚠️ Payment not completed / cancelled";
+      _loading = false;
     });
   }
 
+  // =====================================================
+  // UI
+  // =====================================================
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Razorpay Real-Time Payment")),
+      appBar: AppBar(title: const Text("Razorpay Payment")),
       body: Center(
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                statusText,
+                _status,
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 16),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 24),
+
               ElevatedButton(
-                onPressed: isLoading ? null : startPayment,
-                child: isLoading
-                    ? const CircularProgressIndicator(color: Colors.white)
-                    : const Text("Pay ₹1"),
+                onPressed: _loading ? null : startPayment,
+                child: const Text("Pay ₹5"),
               ),
             ],
           ),
